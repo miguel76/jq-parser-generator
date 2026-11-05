@@ -282,3 +282,14 @@ null
 include "jq-parser-generator"; "1+2" | parse_string({rules: {e: seq([sym("n"), "+", sym("n")]), n: pat("[0-9]")}}; {memo: false}) | to_sexp
 null
 "(e (n) (n))"
+
+# ------------------------------------------------- regressions
+
+# a failed FIELD/ALIAS must restore the start marker of the enclosing node
+include "jq-parser-generator"; "[1:]" | parse_string({rules: {s: seq(["[", sym("n"), ":", optional(field("to"; sym("n"))), "]"]), n: pat("[0-9]")}}) | [.start, .end]
+null
+[0,4]
+
+include "jq-parser-generator"; "(x)" | parse_string({rules: {s: seq(["(", optional(alias(sym("n"); "m")), "x", ")"]), n: "y"}}) | [.start, .end]
+null
+[0,3]

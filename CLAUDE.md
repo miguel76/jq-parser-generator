@@ -13,10 +13,13 @@ jq module, packaged for [jqpm](https://github.com/miguel76/jqpm).
 ```
 jq-parser-generator.jq   the whole library (jqpm entry point: <repo>.jq at the root)
 jqpackage.json           jqpm manifest (name, version, main, dependencies)
-grammars/                bundled grammars (json = tree-sitter-json verbatim, MIT; arithmetic; csv)
+grammars/                bundled grammars (json = tree-sitter-json verbatim, MIT; arithmetic; csv;
+                         sparql11 and jq, generated from grammars/src/*.jq by `make grammars`)
 tests/parse.test         functional tests, jq --run-tests format
 tests/run_tests.py       stdlib-only runner: jq suites + CLI tests + resource tests
-docs/                    grammar-format.md (reference), prior-art.md (survey + design rationale)
+tests/conformance.py     external corpora (W3C SPARQL tests, jq's tests) vs the bundled grammars
+docs/                    grammar-format.md (reference), prior-art.md (survey + design rationale),
+                         sparql-and-jq.md (SPARQL/jq grammars: validation results, missing features)
 ```
 
 ## Commands
@@ -118,6 +121,10 @@ Engine state (threaded through `_m`):
   sense, a scaling ratio, which is never scaled.
 
 ## Roadmap / known limitations
+
+See docs/sparql-and-jq.md for the full list found by the SPARQL/jq grammars,
+including the open bug: `{single: true}` on empty (or extras-only) input
+emits nothing, even if the start rule can match the empty string.
 
 - No left recursion. Idea: precedence climbing for rules using PREC_LEFT /
   PREC_RIGHT, so that tree-sitter expression grammars load unchanged.

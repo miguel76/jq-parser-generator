@@ -165,6 +165,20 @@ recursion** (see below).
 
 ## Grammars
 
+Bundled grammars, in [`grammars/`](grammars/):
+
+| grammar | language | notes |
+|---------|----------|-------|
+| `json.json` | JSON | the tree-sitter-json grammar, verbatim |
+| `arithmetic.json`, `csv.json` | examples | |
+| `sparql11.json` | SPARQL 1.1 Query and Update | start rules `QueryUnit` and `UpdateUnit`. Passes all 258 positive W3C syntax tests |
+| `jq.json` | jq 1.8 | parses all of jq 1.8's test programs and its `builtin.jq` |
+
+`sparql11.json` and `jq.json` are generated from jq DSL sources in
+`grammars/src/` with `make grammars`. See
+[docs/sparql-and-jq.md](docs/sparql-and-jq.md) for how they were validated
+and what they showed is still missing in the library.
+
 See [docs/grammar-format.md](docs/grammar-format.md) for the full reference.
 In short, a grammar is a tree-sitter `grammar.json`:
 
@@ -268,6 +282,9 @@ make test-jq      # only the jq-native functional tests (fast)
 make bench        # resource report (CPU time, peak RSS, throughput)
 ```
 
+- `tests/conformance.py` runs external corpora (the W3C SPARQL test
+  suite, jq's own tests) through the bundled SPARQL and jq grammars; see
+  [docs/sparql-and-jq.md](docs/sparql-and-jq.md).
 - `tests/parse.test` holds the functional tests in jq's own `--run-tests`
   format.
 - `tests/run_tests.py` uses only the Python standard library
