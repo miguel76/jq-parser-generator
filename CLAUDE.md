@@ -27,6 +27,12 @@ make test       # everything, including resource tests (~35 s)
 make bench      # resource report only
 ```
 
+The reference jq is **1.8** (1.8.1 or newer). Pass another binary with
+`make test JQ=/path/to/jq`. jq 1.7 must keep working. jq 1.8.0 passes the
+functional tests, but its `reduce`/`foreach` copy the state on every update
+(jqlang/jq#3205, reverted in 1.8.1), so the runner skips resource tests on
+it unless `JQPG_PERF_FORCE=1` is set.
+
 Tests run from the repository root with `-L .`, so the module is imported as
 `import "jq-parser-generator" as P;` and data grammars as
 `import "grammars/json" as $g;` (then `$g[0]`).
@@ -75,7 +81,7 @@ Engine state (threaded through `_m`):
 
 ## jq performance rules (measured; violating them makes parsing quadratic)
 
-- **Never slice strings in hot code.** `$s[i:j]` is O(i) in jq 1.7. Work on
+- **Never slice strings in hot code.** `$s[i:j]` is O(i) (jq 1.7 and 1.8). Work on
   the exploded codepoint array (`$cps`). Regexes run on `$blocks[k][off:]`,
   which is bounded by `2*window`.
 - **Never hold a reference to the whole state** while updating it. Do not
@@ -126,4 +132,4 @@ Engine state (threaded through `_m`):
 - Throughput is about 5–10 KiB/s. Possible speed-ups: FIRST-set prefiltering
   of CHOICE alternatives, caching extras skips per position, fewer
   allocations per node.
-- Only tested against jq 1.7 so far.
+- Tested against jq 1.7 and 1.8. CI runs both 1.8.1 and Ubuntu's jq.

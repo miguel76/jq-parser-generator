@@ -19,6 +19,12 @@ Absolute budgets are deliberately generous; multiply them with
 JQPG_PERF_SLACK (e.g. JQPG_PERF_SLACK=3 on a slow CI machine). Scaling ratios
 are machine independent and are never relaxed. Set JQPG_PERF_REPORT=path.json to
 write the measurements to a file.
+
+jq 1.8.0 is known to be unusable for the resource tests: its reduce/foreach
+keep an extra reference to the state (jqlang/jq#3205, reverted in 1.8.1), so
+every update copies the container and parsing becomes quadratic. Resource
+tests are skipped on 1.8.0 unless JQPG_PERF_FORCE=1 (or --bench) is set.
+The reference version is jq 1.8.1 or newer.
 """
 
 import json
@@ -36,6 +42,19 @@ ROOT = Path(__file__).resolve().parent.parent
 JQ = os.environ.get("JQ", "jq")
 SLACK = float(os.environ.get("JQPG_PERF_SLACK", "1"))
 REPORT = []
+
+
+def jq_version():
+    try:
+        return subprocess.run([JQ, "--version"], capture_output=True,
+                              text=True, check=True).stdout.strip()
+    except (OSError, subprocess.CalledProcessError):
+        return "unknown"
+
+
+JQ_VERSION = jq_version()
+# jq 1.8.0 copies reduce/foreach state on every update (fixed in 1.8.1)
+JQ_SLOW_REDUCE = JQ_VERSION == "jq-1.8.0"
 
 
 def _vmhwm_kib(pid):
@@ -255,6 +274,10 @@ class ResourceTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
+        if JQ_SLOW_REDUCE and os.environ.get("JQPG_PERF_FORCE") != "1":
+            raise unittest.SkipTest(
+                "jq 1.8.0 has a quadratic reduce/foreach regression (fixed in 1.8.1); "
+                "set JQPG_PERF_FORCE=1 to run anyway")
         # a short busy loop, so that jq lives long enough to be sampled
         _, cls.base_seconds, cls.base_rss = best_of(
             3, ["-n", 'include "jq-parser-generator"; reduce range(300000) as $i (0; . + $i)'])
@@ -348,8 +371,10 @@ def tearDownModule():
 
 
 if __name__ == "__main__":
+    print(f"using {JQ} ({JQ_VERSION})", file=sys.stderr)
     if "--bench" in sys.argv:
         sys.argv.remove("--bench")
+        os.environ["JQPG_PERF_FORCE"] = "1"
         suite = unittest.defaultTestLoader.loadTestsFromTestCase(ResourceTests)
         result = unittest.TextTestRunner(verbosity=2).run(suite)
         sys.exit(0 if result.wasSuccessful() else 1)

@@ -46,7 +46,10 @@ Or clone the repository and pass its directory to `jq -L`:
 jq -L /path/to/jq-parser-generator 'import "jq-parser-generator" as P; ...'
 ```
 
-Requires jq 1.7 or newer (developed and tested with 1.7).
+Requires jq 1.7 or newer. The reference version is jq 1.8 (1.8.1 or newer).
+Avoid jq 1.8.0: a regression in its `reduce`/`foreach`, reverted in 1.8.1,
+makes it copy the parser state on every update, so parsing becomes quadratic
+(about 30 s instead of 4 s for a 26 KB JSON document).
 
 ## Usage
 

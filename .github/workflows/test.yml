@@ -7,13 +7,28 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 1.8.1 is the reference; 1.7 (Ubuntu's package) stays supported.
+        # 1.8.0 is skipped on purpose: its reduce/foreach regression
+        # (reverted in 1.8.1) makes parsing quadratic.
+        jq: ["1.8.1", "apt"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Install jq
+      - name: Install jq (Ubuntu package)
+        if: matrix.jq == 'apt'
         run: sudo apt-get update && sudo apt-get install -y jq && jq --version
+      - name: Install jq ${{ matrix.jq }} (release binary)
+        if: matrix.jq != 'apt'
+        run: |
+          sudo curl -fsSL -o /usr/local/bin/jq \
+            "https://github.com/jqlang/jq/releases/download/jq-${{ matrix.jq }}/jq-linux-amd64"
+          sudo chmod +x /usr/local/bin/jq
+          hash -r && jq --version
       - name: Functional tests (jq --run-tests)
         run: make test-jq
       - name: All tests incl. resource monitoring
@@ -26,5 +41,5 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: perf-report
+          name: perf-report-jq-${{ matrix.jq }}
           path: perf-report.json
