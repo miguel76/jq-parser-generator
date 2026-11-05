@@ -1,0 +1,30 @@
+name: test
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install jq
+        run: sudo apt-get update && sudo apt-get install -y jq && jq --version
+      - name: Functional tests (jq --run-tests)
+        run: make test-jq
+      - name: All tests incl. resource monitoring
+        env:
+          # shared CI runners are slower / noisier than a dev machine
+          JQPG_PERF_SLACK: "3"
+          JQPG_PERF_REPORT: perf-report.json
+        run: make test
+      - name: Upload resource report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-report
+          path: perf-report.json

@@ -1,0 +1,4 @@
+jq_modules/
+__pycache__/
+*.pyc
+perf-report.json

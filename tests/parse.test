@@ -1,0 +1,284 @@
+# Functional tests for jq-parser-generator.
+# Run with:  jq -L . --run-tests tests/parse.test   (from the repository root)
+# Format: program / input / expected output(s), separated by blank lines.
+
+# ---------------------------------------------------------------- DSL builders
+
+include "jq-parser-generator"; seq([str("a"), optional(pat("b+"))])
+null
+{"type":"SEQ","members":[{"type":"STRING","value":"a"},{"type":"CHOICE","members":[{"type":"PATTERN","value":"b+"},{"type":"BLANK"}]}]}
+
+include "jq-parser-generator"; [field("f"; sym("x")), alias(sym("x"); "y"), token(repeat1(str("a"))), prec_left(1; blank)] | map(.type)
+null
+["FIELD","ALIAS","TOKEN","PREC_LEFT"]
+
+include "jq-parser-generator"; sep1(sym("x"); str(","))
+null
+{"type":"SEQ","members":[{"type":"SYMBOL","name":"x"},{"type":"REPEAT","content":{"type":"SEQ","members":[{"type":"STRING","value":","},{"type":"SYMBOL","name":"x"}]}}]}
+
+# ----------------------------------------------------------- compile / validate
+
+include "jq-parser-generator"; {rules: {a: "x", b: ["x", "y"]}} | compile_grammar | {start, b: .rules.b.type, extras: (.extras | map(.value))}
+null
+{"start":"a","b":"SEQ","extras":["\\s"]}
+
+include "jq-parser-generator"; try ({rules: {a: {type: "SYMBOL", name: "nope"}}} | compile_grammar) catch .
+null
+"jq-parser-generator: undefined symbol(s): nope"
+
+include "jq-parser-generator"; try ({rules: {e: seq([sym("e"), str("+"), str("1")])}} | compile_grammar) catch .
+null
+"jq-parser-generator: left-recursive rule(s) not supported by a PEG parser: e"
+
+include "jq-parser-generator"; try ({rules: {a: seq([optional(str("x")), sym("b")]), b: seq([sym("a"), str("y")])}} | compile_grammar) catch .
+null
+"jq-parser-generator: left-recursive rule(s) not supported by a PEG parser: a, b"
+
+include "jq-parser-generator"; try ({rules: {a: {type: "WHATEVER"}}} | compile_grammar) catch .
+null
+"jq-parser-generator: unsupported rule type 'WHATEVER' in 'a'"
+
+include "jq-parser-generator"; try ({rules: {a: pat("(")}} | compile_grammar) catch (. | startswith("jq-parser-generator: invalid regex /(/ in 'a'"))
+null
+true
+
+include "jq-parser-generator"; try ({} | compile_grammar) catch .
+null
+"jq-parser-generator: a grammar must be an object with a non-empty 'rules' object"
+
+include "jq-parser-generator"; {rules: {a: "x"}} | compile_grammar | (compile_grammar == .)
+null
+true
+
+# ------------------------------------------------------------- terminals/nodes
+
+include "jq-parser-generator"; "hello" | parse_string({rules: {word: pat("[a-z]+")}})
+null
+{"type":"word","start":0,"end":5,"text":"hello"}
+
+include "jq-parser-generator"; "  hi" | parse_string({rules: {word: pat("[a-z]+")}}) | [.start, .end]
+null
+[2,4]
+
+include "jq-parser-generator"; "ab" | [parse_string({rules: {s: seq([sym("a"), sym("b")]), a: "a", b: "b"}}) | to_sexp]
+null
+["(s (a) (b))"]
+
+# hidden rules (leading underscore) are spliced into their parent
+include "jq-parser-generator"; "ab" | parse_string({rules: {s: seq([sym("_a"), sym("b")]), _a: sym("a"), a: "a", b: "b"}}) | to_sexp
+null
+"(s (a) (b))"
+
+# a hidden start rule emits each of its child nodes
+include "jq-parser-generator"; "ab" | [parse_string({rules: {_s: seq([sym("a"), sym("b")]), a: "a", b: "b"}}) | to_sexp]
+null
+["(a)","(b)"]
+
+# ---------------------------------------------------------------- PEG semantics
+
+# ordered choice: the first matching alternative wins (no longest match)
+include "jq-parser-generator"; "ab" | [parse_string({rules: {s: choice([sym("a"), sym("ab")]), a: "a", ab: "ab"}}; {errors: "emit"}) | if .error then "error" else to_sexp end]
+null
+["(s (a))","error"]
+
+# inside TOKEN, choice is longest-match (lexer semantics)
+include "jq-parser-generator"; "ab" | [parse_string({rules: {s: token(choice(["a", "ab"]))}}) | .text]
+null
+["ab"]
+
+# greedy repetition
+include "jq-parser-generator"; "aaa" | parse_string({rules: {s: repeat1(sym("a")), a: "a"}}) | .children | length
+null
+3
+
+include "jq-parser-generator"; "b" | parse_string({rules: {s: seq([repeat(sym("a")), sym("b")]), a: "a", b: "b"}}) | to_sexp
+null
+"(s (b))"
+
+# AND / NOT syntactic predicates (like any rule, they skip extras first:
+# use immediate_token to look at the very next character)
+include "jq-parser-generator"; "ab" | parse_string({rules: {s: seq([followed_by("ab"), sym("x")]), x: "ab"}}) | to_sexp
+null
+"(s (x))"
+
+include "jq-parser-generator"; "if iffy" | [parse_string({rules: {_s: choice([sym("kw"), sym("id")]), kw: seq(["if", not_followed_by(immediate_token(pat("[a-z]")))]), id: pat("[a-z]+")}}) | to_sexp]
+null
+["(kw)","(id)"]
+
+# PREC wrappers are accepted and ignored
+include "jq-parser-generator"; "x" | parse_string({rules: {s: prec(5; prec_left(1; str("x")))}}) | .type
+null
+"s"
+
+# EOF
+include "jq-parser-generator"; "x" | parse_string({rules: {s: seq(["x", eof])}}) | .end
+null
+1
+
+# ----------------------------------------------------------------- extras
+
+include "jq-parser-generator"; "a  # c\n b" | parse_string({rules: {s: repeat1(sym("w")), w: pat("[a-z]")}, extras: [pat("\\s+"), pat("#[^\\n]*")]}) | to_sexp
+null
+"(s (w) (w))"
+
+include "jq-parser-generator"; "a b" | [parse_string({rules: {s: seq(["a", "b"])}, extras: []}; {errors: "emit"}) | .error.column]
+null
+[2]
+
+# IMMEDIATE_TOKEN does not skip extras
+include "jq-parser-generator"; ("a.b", "a .b") | [parse_string({rules: {s: seq([pat("[a-z]"), immediate_token("."), pat("[a-z]")])}}; {errors: "emit"}) | if .error then "error" else .end end]
+null
+[3]
+["error"]
+
+# ------------------------------------------------------------- FIELD / ALIAS
+
+include "jq-parser-generator"; "1+2" | parse_string({rules: {sum: seq([field("left"; sym("n")), field("op"; choice(["+", "-"])), field("right"; sym("n"))]), n: pat("[0-9]")}}) | strip_positions
+null
+{"type":"sum","children":[{"type":"n","text":"1","field":"left"},{"type":"+","named":false,"field":"op"},{"type":"n","text":"2","field":"right"}]}
+
+include "jq-parser-generator"; "1+2" | parse_string({rules: {sum: seq([sym("n"), field("op"; choice(["+", "-"])), sym("n")]), n: pat("[0-9]")}}) | to_sexp
+null
+"(sum (n) op: \"+\" (n))"
+
+include "jq-parser-generator"; "x" | parse_string({rules: {s: alias(sym("a"); "renamed")}, a: "x"} | .rules.a = "x") | to_sexp
+null
+"(s (renamed))"
+
+include "jq-parser-generator"; "xy" | parse_string({rules: {s: seq([alias("x"; "ex"), alias("y"; "why"; false)])}}) | strip_positions
+null
+{"type":"s","children":[{"type":"ex","text":"x"},{"type":"why","named":false}]}
+
+# ---------------------------------------------------------------- positions
+
+# offsets count unicode codepoints
+include "jq-parser-generator"; "héllo wörld" | [parse_string({rules: {_s: repeat1(sym("w")), w: pat("\\S+")}}) | [.start, .end, .text]]
+null
+[[0,5,"héllo"],[6,11,"wörld"]]
+
+include "jq-parser-generator"; [parse_stream({rules: {w: pat("[a-z]+")}}; "ab cd", " ef") | [.start, .end]]
+null
+[[0,2],[3,5],[6,8]]
+
+# tokens longer than the regex window are still matched in full
+include "jq-parser-generator"; ([range(3000) | "a"] | join("")) | parse_string({rules: {w: pat("a+")}}; {window: 64}) | .end
+null
+3000
+
+# ------------------------------------------------------------ multiple ASTs
+
+include "jq-parser-generator"; "1 2 3" | [parse_string({rules: {n: pat("[0-9]")}}) | .text]
+null
+["1","2","3"]
+
+# single: the start rule must cover the whole input
+include "jq-parser-generator"; "1 2" | [parse_string({rules: {n: pat("[0-9]")}}; {single: true, errors: "emit"}) | .error.expected]
+null
+[["end of input"]]
+
+include "jq-parser-generator"; "a b" | [parse_string({rules: {s: "a", t: "b"}}; {start: "t", errors: "emit"}) | .error.found]
+null
+["\"a b\""]
+
+include "jq-parser-generator"; try ("" | parse_string({rules: {s: "a"}}; {start: "nope"})) catch .
+null
+"jq-parser-generator: unknown start rule 'nope'"
+
+# empty input / only extras -> no ASTs
+include "jq-parser-generator"; [("", "   \n") | parse_string({rules: {s: "a"}})]
+null
+[]
+
+# ---------------------------------------------------------------- streaming
+
+# tokens split across chunks are re-assembled before being emitted
+include "jq-parser-generator"; [parse_stream({rules: {n: pat("[0-9]+")}}; "1", "2 3", "4", "", "5 ") | .text]
+null
+["12","345"]
+
+# multi-character literal split across chunks
+include "jq-parser-generator"; [parse_stream({rules: {_s: choice([sym("arrow"), sym("dash")]), arrow: "->", dash: "-"}}; "-", ">-", "-", " ") | .type]
+null
+["arrow","dash","dash"]
+
+# an AST is emitted as soon as it is complete, before later chunks arrive
+include "jq-parser-generator"; [limit(2; parse_stream({rules: {n: pat("[0-9]+")}}; ("1 ", "2 ", error("never pulled")))) | .text]
+null
+["1","2"]
+
+# lookahead: regex failures close to the buffer end wait for more input
+include "jq-parser-generator"; [parse_stream({rules: {_s: choice([sym("long"), sym("short")]), long: pat("ab+c"), short: pat("a")}}; {lookahead: 8}; "ab", "bc") | .type]
+null
+["long"]
+
+# newline: each chunk is a line (as read by jq -R)
+include "jq-parser-generator"; [parse_stream({rules: {line: pat("[^\\n]*\\n")}, extras: []}; {newline: true}; "a", "b") | .text]
+null
+["a\n","b\n"]
+
+include "jq-parser-generator"; try ([parse_stream({rules: {s: "a"}}; 1)]) catch .
+null
+"jq-parser-generator: input chunks must be strings, got number"
+
+# ------------------------------------------------------------------ errors
+
+include "jq-parser-generator"; try ("1 +\n  x" | parse_string({rules: {e: seq([sym("n"), repeat(seq(["+", sym("n")]))]), n: pat("[0-9]+")}}; {single: true})) catch {line, column, position, expected, found}
+null
+{"line":2,"column":3,"position":6,"expected":["n"],"found":"\"x\""}
+
+include "jq-parser-generator"; [("ab" | parse_string({rules: {s: "a"}}; {errors: "emit"})) | if .error then .error.message else .type end]
+null
+["s","syntax error at line 1, column 2: expected \"a\", found \"b\""]
+
+include "jq-parser-generator"; "(1" | parse_string({rules: {g: seq(["(", pat("[0-9]"), ")"])}}; {errors: "emit"}) | .error.found
+null
+"end of input"
+
+# -------------------------------------------------------------- utilities
+
+include "jq-parser-generator"; "ab" | parse_string({rules: {s: seq([sym("a"), sym("b")]), a: "a", b: "b"}}) | [nodes | .type]
+null
+["s","a","b"]
+
+# ----------------------------------------------------- bundled grammar: JSON
+
+import "jq-parser-generator" as P; import "grammars/json" as $g; "{\"a\": [1, -2.5e3, true, null, \"x\\ny\"], \"b\": {}} // c" | P::parse_string($g[0]) | P::to_sexp
+null
+"(document (object (pair key: (string (string_content)) value: (array (number) (number) (true) (null) (string (string_content) (escape_sequence) (string_content)))) (pair key: (string (string_content)) value: (object))))"
+
+import "jq-parser-generator" as P; import "grammars/json" as $g; [P::parse_stream($g[0]; {start: "_value"}; "{\"a\": 1", "}  [1,", "2] 3", "4 \"x", "y\"") | P::to_sexp]
+null
+["(object (pair key: (string (string_content)) value: (number)))","(array (number) (number))","(number)","(string (string_content))"]
+
+import "jq-parser-generator" as P; import "grammars/json" as $g; "[1, 2,]" | try P::parse_string($g[0]) catch .message
+null
+"syntax error at line 1, column 7: expected \"[\" or \"\\\"\" or \"false\" or \"null\" or \"true\" or \"{\" or number, found \"]\""
+
+# ----------------------------------------------- bundled grammar: arithmetic
+
+import "jq-parser-generator" as P; import "grammars/arithmetic" as $g; "1 + 2*3 - -(4 % 5)" | P::parse_string($g[0]) | P::to_sexp
+null
+"(expression (sum (number) operator: \"+\" (product (number) operator: \"*\" (number)) operator: \"-\" (negation (product (number) operator: \"%\" (number)))))"
+
+# ------------------------------------------------------ bundled grammar: CSV
+
+import "jq-parser-generator" as P; import "grammars/csv" as $g; [P::parse_stream($g[0]; {}; "a,b,\"c", "\"\"d\"\n1,,3\n", "x") | [.children[] | .text // ([.children[] | if .type == "text" then .text else "\"" end] | join(""))]]
+null
+[["a","b","c\"d"],["1","","3"],["x"]]
+
+# ------------------------------------------------------------- stream control
+
+# with errors: "emit" the stream stops after the error (no more chunks are pulled)
+include "jq-parser-generator"; [parse_stream({rules: {n: pat("[0-9]+")}}; {errors: "emit"}; "1 x", error("never pulled")) | .text // .error.found]
+null
+["1","\"x\""]
+
+# backoff only changes when attempts happen, not the result
+include "jq-parser-generator"; [1, 2, 10] | map(. as $b | [parse_stream({rules: {n: pat("[0-9]+")}}; {backoff: $b}; "1", "2", "3", " 4", "5", " ", "6") | .text])
+null
+[["123","45","6"],["123","45","6"],["123","45","6"]]
+
+# memo can be disabled (same result, possibly exponential time on some grammars)
+include "jq-parser-generator"; "1+2" | parse_string({rules: {e: seq([sym("n"), "+", sym("n")]), n: pat("[0-9]")}}; {memo: false}) | to_sexp
+null
+"(e (n) (n))"

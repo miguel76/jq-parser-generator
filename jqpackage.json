@@ -1,0 +1,7 @@
+{
+  "name": "jq-parser-generator",
+  "version": "0.1.0",
+  "description": "A grammar-driven (PEG) lexer/parser written in pure jq; grammars use the tree-sitter grammar.json format.",
+  "main": "jq-parser-generator.jq",
+  "dependencies": {}
+}
