@@ -239,6 +239,31 @@ class CliTests(unittest.TestCase):
             self.assertEqual(proc.returncode, 0, proc.stderr.decode())
             self.assertEqual(proc.stdout.decode().strip(), "1")
 
+    def test_generated_grammars_up_to_date(self):
+        """grammars/X.json is the output of grammars/src/X.jq (`make grammars`)."""
+        for src in sorted((ROOT / "grammars" / "src").glob("*.jq")):
+            rc, out, err = self.jq(["-n", "-f", str(src)])
+            self.assertEqual(rc, 0, err)
+            committed = json.loads((ROOT / "grammars" / (src.stem + ".json")).read_text())
+            self.assertEqual(json.loads(out), committed, f"run `make grammars` ({src.name})")
+
+    def test_sparql_and_jq_grammars(self):
+        rc, out, err = self.jq(["-nrc", "--slurpfile", "s", "grammars/sparql11.json",
+                                "--slurpfile", "j", "grammars/jq.json",
+                                'import "jq-parser-generator" as P; '
+                                '("PREFIX : <x:> SELECT * { ?s :p/:q* [ :r 1 ] } LIMIT 2" '
+                                ' | P::parse_string($s[0]; {single: true}) | [P::nodes.type] | length), '
+                                '("INSERT DATA { <a> <b> \\"c\\" }" '
+                                ' | P::parse_string($s[0]; {single: true, start: "UpdateUnit"}) | .children[0].type), '
+                                '(".a as $x | 1 + 2 * 3, -$x" '
+                                ' | P::parse_string($j[0]; {single: true}) | P::to_sexp)'])
+        self.assertEqual(rc, 0, err)
+        lines = out.splitlines()
+        self.assertEqual(lines[1], "InsertData")
+        self.assertEqual(lines[2], '(program (binding source: (field) (variable) body: (comma '
+                                   '(additive (number) operator: "+" (multiplicative (number) operator: "*" (number))) '
+                                   '(negation (variable)))))')
+
     def test_manifest(self):
         manifest = json.loads((ROOT / "jqpackage.json").read_text())
         self.assertEqual(manifest["name"], "jq-parser-generator")

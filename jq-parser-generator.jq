@@ -343,7 +343,7 @@ def _attempt($G; $o; $cps; $blocks; $eof; $off; $p0):
                  end) as $nodes
               | .kids = $b.kids | reduce $nodes[] as $n (.; _push($n))
               | .first = (if $b.first == null then $st else $b.first end)
-            else . end
+            else restore($b) end   # restore `first`: CHOICE relies on failed alternatives leaving no trace
 
         elif $t == "BLANK" then .
 

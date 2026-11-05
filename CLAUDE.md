@@ -13,10 +13,13 @@ jq module, packaged for [jqpm](https://github.com/miguel76/jqpm).
 ```
 jq-parser-generator.jq   the whole library (jqpm entry point: <repo>.jq at the root)
 jqpackage.json           jqpm manifest (name, version, main, dependencies)
-grammars/                bundled grammars (json = tree-sitter-json verbatim, MIT; arithmetic; csv)
+grammars/                bundled grammars (json = tree-sitter-json verbatim, MIT; arithmetic; csv;
+                         sparql11 and jq, generated from grammars/src/*.jq by `make grammars`)
 tests/parse.test         functional tests, jq --run-tests format
 tests/run_tests.py       stdlib-only runner: jq suites + CLI tests + resource tests
-docs/                    grammar-format.md (reference), prior-art.md (survey + design rationale)
+tests/conformance.py     external corpora (W3C SPARQL tests, jq's tests) vs the bundled grammars
+docs/                    grammar-format.md (reference), prior-art.md (survey + design rationale),
+                         sparql-and-jq.md (SPARQL/jq grammars: validation results, missing features)
 ```
 
 ## Commands
@@ -26,6 +29,24 @@ make test-jq    # jq -L . --run-tests tests/parse.test   (~2 s)  run after every
 make test       # everything, including resource tests (~35 s)
 make bench      # resource report only
 ```
+
+### jq versions
+
+The system `jq` is 1.7, the version CI installs. The cloud environment's
+setup script also installs **jq 1.8.0** as `/usr/local/bin/jq-1.8` (the
+official release binary, verified against the release's `sha256sum.txt`).
+The system `jq` is left untouched. All test commands take a `JQ` variable:
+
+```sh
+make test JQ=jq-1.8                                   # library under jq 1.8
+JQ=jq-1.8 python3 tests/conformance.py jq-roundtrip <jq-1.8.0 source checkout>
+```
+
+`jq-roundtrip` re-runs jq's test programs with the binary in `JQ`; with
+jq 1.8 it compares against the same version the jq grammar targets. If
+`jq-1.8` is missing, the session started before the setup script was
+added: start a new session. Do not download and run a jq binary from
+inside a session.
 
 Tests run from the repository root with `-L .`, so the module is imported as
 `import "jq-parser-generator" as P;` and data grammars as
@@ -119,6 +140,10 @@ Engine state (threaded through `_m`):
 
 ## Roadmap / known limitations
 
+See docs/sparql-and-jq.md for the full list found by the SPARQL/jq grammars,
+including the open bug: `{single: true}` on empty (or extras-only) input
+emits nothing, even if the start rule can match the empty string.
+
 - No left recursion. Idea: precedence climbing for rules using PREC_LEFT /
   PREC_RIGHT, so that tree-sitter expression grammars load unchanged.
 - Extras produce no nodes (comments are dropped).
@@ -126,4 +151,6 @@ Engine state (threaded through `_m`):
 - Throughput is about 5–10 KiB/s. Possible speed-ups: FIRST-set prefiltering
   of CHOICE alternatives, caching extras skips per position, fewer
   allocations per node.
-- Only tested against jq 1.7 so far.
+- Only tested against jq 1.7 so far. Next step: run `make test` and the
+  conformance round trip with `jq-1.8` (see "jq versions"), then add jq 1.8
+  to the CI matrix in `.github/workflows/test.yml`.
