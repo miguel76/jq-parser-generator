@@ -30,6 +30,24 @@ make test       # everything, including resource tests (~35 s)
 make bench      # resource report only
 ```
 
+### jq versions
+
+The system `jq` is 1.7, the version CI installs. The cloud environment's
+setup script also installs **jq 1.8.0** as `/usr/local/bin/jq-1.8` (the
+official release binary, verified against the release's `sha256sum.txt`).
+The system `jq` is left untouched. All test commands take a `JQ` variable:
+
+```sh
+make test JQ=jq-1.8                                   # library under jq 1.8
+JQ=jq-1.8 python3 tests/conformance.py jq-roundtrip <jq-1.8.0 source checkout>
+```
+
+`jq-roundtrip` re-runs jq's test programs with the binary in `JQ`; with
+jq 1.8 it compares against the same version the jq grammar targets. If
+`jq-1.8` is missing, the session started before the setup script was
+added: start a new session. Do not download and run a jq binary from
+inside a session.
+
 Tests run from the repository root with `-L .`, so the module is imported as
 `import "jq-parser-generator" as P;` and data grammars as
 `import "grammars/json" as $g;` (then `$g[0]`).
@@ -133,4 +151,6 @@ emits nothing, even if the start rule can match the empty string.
 - Throughput is about 5–10 KiB/s. Possible speed-ups: FIRST-set prefiltering
   of CHOICE alternatives, caching extras skips per position, fewer
   allocations per node.
-- Only tested against jq 1.7 so far.
+- Only tested against jq 1.7 so far. Next step: run `make test` and the
+  conformance round trip with `jq-1.8` (see "jq versions"), then add jq 1.8
+  to the CI matrix in `.github/workflows/test.yml`.
