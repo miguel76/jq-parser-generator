@@ -50,7 +50,7 @@ would let most tree-sitter grammars load unchanged.
 
 All of these were measured. See CLAUDE.md for the rules they imply.
 
-- **No string slicing in the hot path.** In jq 1.7, `$s[i:]` is O(i) (UTF-8
+- **No string slicing in the hot path.** In jq 1.7 and 1.8, `$s[i:]` is O(i) (UTF-8
   walking) and copies the slice. A substring-based parser is O(n²): about
   9 s for 20k slices of a 120 KB string. The input is therefore exploded
   once into a codepoint array. Literals are compared as array slices, and

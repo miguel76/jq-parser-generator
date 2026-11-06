@@ -150,7 +150,7 @@ def compile_grammar:
   elif type != "object" or (.rules | type) != "object" or (.rules | length) == 0 then
     _gerr("a grammar must be an object with a non-empty 'rules' object")
   else
-    (.rules | keys_unsorted) as $names
+    (.rules | to_entries | map(.key)) as $names   # insertion order; keys_unsorted is not in gojq
     | {
         compiled: true,
         name: (.name // "grammar"),
@@ -182,6 +182,7 @@ def _attempt($G; $o; $cps; $blocks; $eof; $off; $p0):
   ($cps | length) as $len
   | $o.window as $W
   | $o.memo as $useMemo
+  | (if $useMemo then 1 | until(pow(32; .) > $len; . + 1) else 0 end) as $md   # memo trie depth
   | ($o.start // $G.start) as $start
 
   # ---- regex matching on a bounded window (jq string slicing is O(n)) -----
@@ -195,6 +196,17 @@ def _attempt($G; $o; $cps; $blocks; $eof; $off; $p0):
           then [$cps[$p:] | implode | match($re; $fl)] | .[0].length
           else $L end
       end;
+
+    # ---- memo table: a trie over the position --------------------------
+    # .memo is nested arrays of 32 slots, one level per base-32 digit of the
+    # position, with an object {rule: entry} per position at the leaves. An
+    # update then touches O(32 * depth + rules) slots. A flat object would be
+    # fine in jq (updated in place), but gojq copies an object on every
+    # update, which made memoisation quadratic there.
+    def _mpath($p; $name; $tok):
+        ["memo"]
+        + [range($md - 1; -1; -1) as $i | (($p / pow(32; $i)) | floor) % 32]
+        + [if $tok then $name + "@t" else $name end];
 
     # ---- children stack: immutable cons list [node, rest, length] ---------
     # NB: `a // b` is avoided in the engine: when `a` is truthy it leaves a
@@ -267,22 +279,22 @@ def _attempt($G; $o; $cps; $blocks; $eof; $off; $p0):
             end
 
         elif $t == "SYMBOL" then
-          ($r.name + "@" + (.pos | tostring) + (if $tok then "t" else "" end)) as $key
-          | if $useMemo and .memo[$key] != null then
-              .memo[$key] as $e
-              | if $e.ok then .pos = $e.pos | _setfirst($e.first)
+          (if $useMemo then _mpath(.pos; $r.name; $tok) else null end) as $mp
+          | (if $useMemo then getpath($mp) else null end) as $e
+          | if $e != null then
+              if $e.ok then .pos = $e.pos | _setfirst($e.first)
                               | reduce $e.nodes[] as $n (.; _push($n))
                 else .ok = false end
             else
               {pos, kids, first, nk: _klen} as $b
-              | (if $useMemo then .memo[$key] = {ok: false} else . end)   # left-recursion guard
+              | (if $useMemo then setpath($mp; {ok: false}) else . end)   # left-recursion guard
               | .first = null
               | _m($G.rules[$r.name]; $tok)
               | if .ok then
                   (if .first == null then $b.pos else .first end) as $st
                   | _take(_klen - $b.nk) as $ch
                   | (if $r.name | startswith("_") then $ch else [_node($r.name; $st; .pos; $ch)] end) as $nodes
-                  | (if $useMemo then .memo[$key] = {ok: true, pos, first: $st, nodes: $nodes} else . end)
+                  | (if $useMemo then setpath($mp; {ok: true, pos, first: $st, nodes: $nodes}) else . end)
                   | .kids = $b.kids | reduce $nodes[] as $n (.; _push($n))
                   | .first = (if $b.first == null then $st else $b.first end)
                 else restore($b) end
@@ -365,7 +377,7 @@ def _attempt($G; $o; $cps; $blocks; $eof; $off; $p0):
 
     # ---- one top-level attempt -----------------------------------------
     {ok: true, pos: $p0, kids: null, first: null, far: -1, exp: [], touch: -1,
-     memo: {}, sx: [-1, -1], lb: []}
+     memo: null, sx: [-1, -1], lb: []}
     # skip leading extras (a TOKEN around BLANK only skips)
     | _m({type: "TOKEN", content: {type: "BLANK"}, label: "token"}; false)
     | .pos as $ps

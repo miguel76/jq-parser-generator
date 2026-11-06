@@ -19,6 +19,12 @@ Absolute budgets are deliberately generous; multiply them with
 JQPG_PERF_SLACK (e.g. JQPG_PERF_SLACK=3 on a slow CI machine). Scaling ratios
 are machine independent and are never relaxed. Set JQPG_PERF_REPORT=path.json to
 write the measurements to a file.
+
+jq 1.8.0 is known to be unusable for the resource tests: its reduce/foreach
+keep an extra reference to the state (jqlang/jq#3205, reverted in 1.8.1), so
+every update copies the container and parsing becomes quadratic. Resource
+tests are skipped on 1.8.0 unless JQPG_PERF_FORCE=1 (or --bench) is set.
+The reference version is jq 1.8.1 or newer.
 """
 
 import json
@@ -36,6 +42,19 @@ ROOT = Path(__file__).resolve().parent.parent
 JQ = os.environ.get("JQ", "jq")
 SLACK = float(os.environ.get("JQPG_PERF_SLACK", "1"))
 REPORT = []
+
+
+def jq_version():
+    try:
+        return subprocess.run([JQ, "--version"], capture_output=True,
+                              text=True, check=True).stdout.strip()
+    except (OSError, subprocess.CalledProcessError):
+        return "unknown"
+
+
+JQ_VERSION = jq_version()
+# jq 1.8.0 copies reduce/foreach state on every update (fixed in 1.8.1)
+JQ_SLOW_REDUCE = JQ_VERSION == "jq-1.8.0"
 
 
 def _vmhwm_kib(pid):
@@ -139,7 +158,7 @@ def json_lines(n_records, seed=2):
 
 
 PARSE_DOC = ('import "jq-parser-generator" as P; import "grammars/json" as $g; '
-             'P::parse_string($g[0]) | [P::nodes] | length')
+             'P::parse_string($g[0]; {start: "document"}) | [P::nodes] | length')
 STREAM_LINES = ('import "jq-parser-generator" as P; import "grammars/json" as $g; '
                 'P::parse($g[0]; {start: "_value", newline: true}) | .end')
 
@@ -148,22 +167,92 @@ STREAM_LINES = ('import "jq-parser-generator" as P; import "grammars/json" as $g
 # Functional tests
 # ---------------------------------------------------------------------------
 
+def has_run_tests():
+    """jq has --run-tests; gojq and other implementations do not."""
+    return JQ_VERSION.startswith("jq-")
+
+
+def keeps_key_order():
+    proc = subprocess.run([JQ, "-nc", '{b: 1, a: 2} | [to_entries[].key]'],
+                          capture_output=True, text=True)
+    return proc.stdout.strip() == '["b","a"]'
+
+
+def read_test_cases(path):
+    """Parse a jq --run-tests file into (line, program, input, expected, needs)."""
+    lines = path.read_text().split("\n")
+    cases, needs, i = [], set(), 0
+    while i < len(lines):
+        line = lines[i]
+        if not line.strip():
+            needs, i = set(), i + 1
+            continue
+        if line.startswith("#"):
+            m = re.match(r"#\s*needs:\s*([\w-]+)", line)
+            if m:
+                needs.add(m.group(1))
+            i += 1
+            continue
+        if line.startswith("%%FAIL"):
+            raise ValueError(f"{path.name}:{i + 1}: %%FAIL cases need jq --run-tests")
+        start, program, stdin = i + 1, line, lines[i + 1]
+        i += 2
+        expected = []
+        while i < len(lines) and lines[i].strip():
+            expected.append(lines[i])
+            i += 1
+        cases.append((start, program, stdin, expected, needs))
+        needs = set()
+    return cases
+
+
 class JqTestSuites(unittest.TestCase):
-    """Runs every tests/*.test file with `jq --run-tests`."""
+    """Runs every tests/*.test file with `jq --run-tests`.
+
+    Implementations without --run-tests (gojq) get an emulation: each case
+    runs as its own process and outputs are compared as JSON values. Cases
+    marked `# needs: key-order` are skipped where object key order is lost.
+    """
 
     def test_suites(self):
         files = sorted((ROOT / "tests").glob("*.test"))
         self.assertTrue(files, "no .test files found")
         for f in files:
             with self.subTest(file=f.name):
-                proc = subprocess.run([JQ, "-L", str(ROOT), "--run-tests", str(f)],
-                                      capture_output=True, cwd=str(ROOT))
-                text = proc.stdout.decode() + proc.stderr.decode()
-                m = re.search(r"(\d+) of (\d+) tests passed \((\d+) malformed", text)
-                self.assertIsNotNone(m, text)
-                failures = [l for l in text.splitlines() if l.startswith("***")]
-                self.assertEqual(m.group(1), m.group(2), "\n".join(failures))
-                self.assertEqual(m.group(3), "0", "malformed tests")
+                if has_run_tests():
+                    self.run_native(f)
+                else:
+                    self.run_emulated(f)
+
+    def run_native(self, f):
+        proc = subprocess.run([JQ, "-L", str(ROOT), "--run-tests", str(f)],
+                              capture_output=True, cwd=str(ROOT))
+        text = proc.stdout.decode() + proc.stderr.decode()
+        m = re.search(r"(\d+) of (\d+) tests passed \((\d+) malformed", text)
+        self.assertIsNotNone(m, text)
+        failures = [l for l in text.splitlines() if l.startswith("***")]
+        self.assertEqual(m.group(1), m.group(2), "\n".join(failures))
+        self.assertEqual(m.group(3), "0", "malformed tests")
+
+    def run_emulated(self, f):
+        key_order = keeps_key_order()
+        failures, skipped, cases = [], 0, read_test_cases(f)
+        for line, program, stdin, expected, needs in cases:
+            if "key-order" in needs and not key_order:
+                skipped += 1
+                continue
+            proc = subprocess.run([JQ, "-L", str(ROOT), "-c", program], input=stdin.encode(),
+                                  capture_output=True, cwd=str(ROOT))
+            try:
+                got = [json.loads(l) for l in proc.stdout.decode().splitlines() if l.strip()]
+            except ValueError:
+                got = proc.stdout.decode()
+            if proc.returncode != 0 or got != [json.loads(e) for e in expected]:
+                failures.append(f"line {line}: {program}\n  expected {expected}\n  got {got}"
+                                f"\n  {proc.stderr.decode().strip()}")
+        print(f"{f.name}: {len(cases) - skipped - len(failures)} of {len(cases)} passed, "
+              f"{skipped} skipped (emulated --run-tests)", file=sys.stderr)
+        self.assertFalse(failures, "\n".join(failures))
 
 
 class CliTests(unittest.TestCase):
@@ -177,7 +266,7 @@ class CliTests(unittest.TestCase):
     def test_raw_lines(self):
         rc, out, _ = self.jq(["-nRc", "--slurpfile", "g", "grammars/csv.json",
                               'import "jq-parser-generator" as P; '
-                              'P::parse($g[0]; {newline: true}) | P::to_sexp'],
+                              'P::parse($g[0]; {start: "record", newline: true}) | P::to_sexp'],
                              b'a,b\n"multi\nline",c\n')
         self.assertEqual(rc, 0)
         self.assertEqual(out.splitlines(), ['"(record (field) (field))"',
@@ -187,7 +276,7 @@ class CliTests(unittest.TestCase):
         # without -n the first input is `.`, the others come from `inputs`
         rc, out, _ = self.jq(["-c", "--slurpfile", "g", "grammars/arithmetic.json",
                               'import "jq-parser-generator" as P; '
-                              'P::parse($g[0]; {single: true}) | P::to_sexp'],
+                              'P::parse($g[0]; {start: "expression", single: true}) | P::to_sexp'],
                              b'"1+" "2" "*3"')
         self.assertEqual(rc, 0)
         self.assertEqual(json.loads(out),
@@ -195,14 +284,14 @@ class CliTests(unittest.TestCase):
 
     def test_whole_file(self):
         rc, out, _ = self.jq(["-Rsc", "--slurpfile", "g", "grammars/json.json",
-                              'import "jq-parser-generator" as P; P::parse($g[0]) | P::to_sexp'],
+                              'import "jq-parser-generator" as P; P::parse($g[0]; {start: "document"}) | P::to_sexp'],
                              b'{"a": [1, 2]}\n')
         self.assertEqual(rc, 0)
         self.assertIn("(document (object (pair", out)
 
     def test_error_exit_status(self):
         rc, out, err = self.jq(["-nR", "--slurpfile", "g", "grammars/json.json",
-                                'import "jq-parser-generator" as P; P::parse($g[0]; {newline: true})'],
+                                'import "jq-parser-generator" as P; P::parse($g[0]; {start: "document", newline: true})'],
                                b'{"a": }\n')
         self.assertNotEqual(rc, 0)
         self.assertIn("syntax error at line 1, column 7", err)
@@ -214,7 +303,8 @@ class CliTests(unittest.TestCase):
                               '| if .error then .error | {line, column} else .type end'],
                              b'1\n[2]\n{x}\n')
         self.assertEqual(rc, 0)
-        self.assertEqual(out.splitlines(), ['"number"', '"array"', '{"line":3,"column":2}'])
+        self.assertEqual([json.loads(l) for l in out.splitlines()],
+                         ["number", "array", {"line": 3, "column": 2}])
 
     def test_example_calculator(self):
         rc, out, err = self.jq(["-nR", "--slurpfile", "g", "grammars/arithmetic.json",
@@ -280,6 +370,10 @@ class ResourceTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
+        if JQ_SLOW_REDUCE and os.environ.get("JQPG_PERF_FORCE") != "1":
+            raise unittest.SkipTest(
+                "jq 1.8.0 has a quadratic reduce/foreach regression (fixed in 1.8.1); "
+                "set JQPG_PERF_FORCE=1 to run anyway")
         # a short busy loop, so that jq lives long enough to be sampled
         _, cls.base_seconds, cls.base_rss = best_of(
             3, ["-n", 'include "jq-parser-generator"; reduce range(300000) as $i (0; . + $i)'])
@@ -326,7 +420,7 @@ class ResourceTests(unittest.TestCase):
         lines = doc  # indent=1 => one chunk per line, ~8 lines per item
         out, sec, rss = best_of(1, ["-nR",
                                     'import "jq-parser-generator" as P; import "grammars/json" as $g; '
-                                    'P::parse($g[0]; {newline: true}) | [P::nodes] | length'], lines)
+                                    'P::parse($g[0]; {start: "document", newline: true}) | [P::nodes] | length'], lines)
         record("json document fed line by line", len(doc), sec, rss,
                chunks=doc.count(b"\n"))
         self.assertGreater(int(out), 600)
@@ -345,7 +439,7 @@ class ResourceTests(unittest.TestCase):
         n = 20000
         data = (" ".join(str(i % 10) for i in range(n))).encode()
         prog = ('import "jq-parser-generator" as P; '
-                'P::parse_string({rules: {list: P::repeat(P::sym("d")), d: P::pat("[0-9]")}}) '
+                'P::parse_string({start: "list", rules: {list: P::repeat(P::sym("d")), d: P::pat("[0-9]")}}) '
                 '| .children | length')
         out, sec, rss = best_of(1, ["-R", "-s", prog], data)
         record("flat repetition of 20k items", len(data), sec, rss, items=n)
@@ -373,8 +467,10 @@ def tearDownModule():
 
 
 if __name__ == "__main__":
+    print(f"using {JQ} ({JQ_VERSION})", file=sys.stderr)
     if "--bench" in sys.argv:
         sys.argv.remove("--bench")
+        os.environ["JQPG_PERF_FORCE"] = "1"
         suite = unittest.defaultTestLoader.loadTestsFromTestCase(ResourceTests)
         result = unittest.TextTestRunner(verbosity=2).run(suite)
         sys.exit(0 if result.wasSuccessful() else 1)

@@ -30,23 +30,17 @@ make test       # everything, including resource tests (~35 s)
 make bench      # resource report only
 ```
 
-### jq versions
+The reference jq is **1.8** (1.8.1 or newer). Pass another binary with
+`make test JQ=/path/to/jq`. jq 1.7 and gojq must keep working (CI runs
+all three). gojq has no `--run-tests`: `make test-jq` and the runner then
+run each case as its own process and compare outputs as JSON. jq 1.8.0 passes the
+functional tests, but its `reduce`/`foreach` copy the state on every update
+(jqlang/jq#3205, reverted in 1.8.1), so the runner skips resource tests on
+it unless `JQPG_PERF_FORCE=1` is set.
 
-The system `jq` is 1.7, the version CI installs. The cloud environment's
-setup script also installs **jq 1.8.0** as `/usr/local/bin/jq-1.8` (the
-official release binary, verified against the release's `sha256sum.txt`).
-The system `jq` is left untouched. All test commands take a `JQ` variable:
-
-```sh
-make test JQ=jq-1.8                                   # library under jq 1.8
-JQ=jq-1.8 python3 tests/conformance.py jq-roundtrip <jq-1.8.0 source checkout>
-```
-
-`jq-roundtrip` re-runs jq's test programs with the binary in `JQ`; with
-jq 1.8 it compares against the same version the jq grammar targets. If
-`jq-1.8` is missing, the session started before the setup script was
-added: start a new session. Do not download and run a jq binary from
-inside a session.
+`JQ=<jq> python3 tests/conformance.py jq-roundtrip <jq source checkout>`
+re-runs jq's test programs with the binary in `JQ`; use a jq 1.8 binary,
+the version the bundled jq grammar targets.
 
 Tests run from the repository root with `-L .`, so the module is imported as
 `import "jq-parser-generator" as P;` and data grammars as
@@ -96,7 +90,7 @@ Engine state (threaded through `_m`):
 
 ## jq performance rules (measured; violating them makes parsing quadratic)
 
-- **Never slice strings in hot code.** `$s[i:j]` is O(i) in jq 1.7. Work on
+- **Never slice strings in hot code.** `$s[i:j]` is O(i) (jq 1.7 and 1.8). Work on
   the exploded codepoint array (`$cps`). Regexes run on `$blocks[k][off:]`,
   which is bounded by `2*window`.
 - **Never hold a reference to the whole state** while updating it. Do not
@@ -109,6 +103,12 @@ Engine state (threaded through `_m`):
 - Avoid generators that stay open across updates, e.g.
   `(x, y) as $v | <update .>`.
 - Do not append to arrays that a snapshot also references. Use the cons list.
+- **No large flat objects or arrays that grow during a parse.** gojq never
+  updates in place: every update copies the container. The memo table is
+  therefore a trie over the position (`_mpath`: arrays of 32 slots per
+  base-32 digit, a `{rule: entry}` object per position at the leaves).
+- Do not rely on object key order (`keys_unsorted`, the first rule as
+  start) beyond `compile_grammar`'s default: gojq sorts keys.
 - After touching the engine, run `make bench`. The resource tests assert
   linear scaling and constant memory for streams.
 
@@ -132,6 +132,9 @@ Engine state (threaded through `_m`):
   an input line and the expected output line(s), separated by a blank line.
   Programs must fit on a single line. Use `try … catch` for runtime errors.
   `%%FAIL` is only for compile errors of the test program itself.
+- Give multi-rule grammars an explicit `start`. A case that really tests
+  key order gets a `# needs: key-order` comment line right before it; the
+  emulated runner skips it on gojq.
 - CLI behaviour (`-R`, `-n`, `inputs`, exit codes) goes in `CliTests` in
   `tests/run_tests.py`.
 - New performance-sensitive features need a `ResourceTests` case: record()
@@ -148,9 +151,8 @@ emits nothing, even if the start rule can match the empty string.
   PREC_RIGHT, so that tree-sitter expression grammars load unchanged.
 - Extras produce no nodes (comments are dropped).
 - `word`, `conflicts`, `externals` and `precedences` are ignored.
-- Throughput is about 5–10 KiB/s. Possible speed-ups: FIRST-set prefiltering
+- Throughput is about 3–7 KiB/s on jq 1.8.1 (5–10 KiB/s on jq 1.7). Possible speed-ups: FIRST-set prefiltering
   of CHOICE alternatives, caching extras skips per position, fewer
   allocations per node.
-- Only tested against jq 1.7 so far. Next step: run `make test` and the
-  conformance round trip with `jq-1.8` (see "jq versions"), then add jq 1.8
-  to the CI matrix in `.github/workflows/test.yml`.
+- Tested against jq 1.7, jq 1.8 and gojq. CI runs jq 1.8.1, Ubuntu's jq
+  and gojq 0.12.20. fq passes the functional tests but is not in CI.

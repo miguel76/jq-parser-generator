@@ -1,6 +1,8 @@
 # Functional tests for jq-parser-generator.
 # Run with:  jq -L . --run-tests tests/parse.test   (from the repository root)
 # Format: program / input / expected output(s), separated by blank lines.
+# A case preceded by `# needs: key-order` relies on object key order, which
+# gojq does not keep; tests/run_tests.py skips it on such implementations.
 
 # ---------------------------------------------------------------- DSL builders
 
@@ -60,12 +62,17 @@ include "jq-parser-generator"; "  hi" | parse_string({rules: {word: pat("[a-z]+"
 null
 [2,4]
 
+# needs: key-order  (the first rule is the default start; gojq sorts object keys)
 include "jq-parser-generator"; "ab" | [parse_string({rules: {s: seq([sym("a"), sym("b")]), a: "a", b: "b"}}) | to_sexp]
 null
 ["(s (a) (b))"]
 
+include "jq-parser-generator"; "ab" | [parse_string({start: "s", rules: {s: seq([sym("a"), sym("b")]), a: "a", b: "b"}}) | to_sexp]
+null
+["(s (a) (b))"]
+
 # hidden rules (leading underscore) are spliced into their parent
-include "jq-parser-generator"; "ab" | parse_string({rules: {s: seq([sym("_a"), sym("b")]), _a: sym("a"), a: "a", b: "b"}}) | to_sexp
+include "jq-parser-generator"; "ab" | parse_string({start: "s", rules: {s: seq([sym("_a"), sym("b")]), _a: sym("a"), a: "a", b: "b"}}) | to_sexp
 null
 "(s (a) (b))"
 
@@ -77,7 +84,7 @@ null
 # ---------------------------------------------------------------- PEG semantics
 
 # ordered choice: the first matching alternative wins (no longest match)
-include "jq-parser-generator"; "ab" | [parse_string({rules: {s: choice([sym("a"), sym("ab")]), a: "a", ab: "ab"}}; {errors: "emit"}) | if .error then "error" else to_sexp end]
+include "jq-parser-generator"; "ab" | [parse_string({start: "s", rules: {s: choice([sym("a"), sym("ab")]), a: "a", ab: "ab"}}; {errors: "emit"}) | if .error then "error" else to_sexp end]
 null
 ["(s (a))","error"]
 
@@ -87,11 +94,11 @@ null
 ["ab"]
 
 # greedy repetition
-include "jq-parser-generator"; "aaa" | parse_string({rules: {s: repeat1(sym("a")), a: "a"}}) | .children | length
+include "jq-parser-generator"; "aaa" | parse_string({start: "s", rules: {s: repeat1(sym("a")), a: "a"}}) | .children | length
 null
 3
 
-include "jq-parser-generator"; "b" | parse_string({rules: {s: seq([repeat(sym("a")), sym("b")]), a: "a", b: "b"}}) | to_sexp
+include "jq-parser-generator"; "b" | parse_string({start: "s", rules: {s: seq([repeat(sym("a")), sym("b")]), a: "a", b: "b"}}) | to_sexp
 null
 "(s (b))"
 
@@ -133,15 +140,15 @@ null
 
 # ------------------------------------------------------------- FIELD / ALIAS
 
-include "jq-parser-generator"; "1+2" | parse_string({rules: {sum: seq([field("left"; sym("n")), field("op"; choice(["+", "-"])), field("right"; sym("n"))]), n: pat("[0-9]")}}) | strip_positions
+include "jq-parser-generator"; "1+2" | parse_string({start: "sum", rules: {sum: seq([field("left"; sym("n")), field("op"; choice(["+", "-"])), field("right"; sym("n"))]), n: pat("[0-9]")}}) | strip_positions
 null
 {"type":"sum","children":[{"type":"n","text":"1","field":"left"},{"type":"+","named":false,"field":"op"},{"type":"n","text":"2","field":"right"}]}
 
-include "jq-parser-generator"; "1+2" | parse_string({rules: {sum: seq([sym("n"), field("op"; choice(["+", "-"])), sym("n")]), n: pat("[0-9]")}}) | to_sexp
+include "jq-parser-generator"; "1+2" | parse_string({start: "sum", rules: {sum: seq([sym("n"), field("op"; choice(["+", "-"])), sym("n")]), n: pat("[0-9]")}}) | to_sexp
 null
 "(sum (n) op: \"+\" (n))"
 
-include "jq-parser-generator"; "x" | parse_string({rules: {s: alias(sym("a"); "renamed")}, a: "x"} | .rules.a = "x") | to_sexp
+include "jq-parser-generator"; "x" | parse_string({start: "s", rules: {s: alias(sym("a"); "renamed")}, a: "x"} | .rules.a = "x") | to_sexp
 null
 "(s (renamed))"
 
@@ -236,13 +243,13 @@ null
 
 # -------------------------------------------------------------- utilities
 
-include "jq-parser-generator"; "ab" | parse_string({rules: {s: seq([sym("a"), sym("b")]), a: "a", b: "b"}}) | [nodes | .type]
+include "jq-parser-generator"; "ab" | parse_string({start: "s", rules: {s: seq([sym("a"), sym("b")]), a: "a", b: "b"}}) | [nodes | .type]
 null
 ["s","a","b"]
 
 # ----------------------------------------------------- bundled grammar: JSON
 
-import "jq-parser-generator" as P; import "grammars/json" as $g; "{\"a\": [1, -2.5e3, true, null, \"x\\ny\"], \"b\": {}} // c" | P::parse_string($g[0]) | P::to_sexp
+import "jq-parser-generator" as P; import "grammars/json" as $g; "{\"a\": [1, -2.5e3, true, null, \"x\\ny\"], \"b\": {}} // c" | P::parse_string($g[0]; {start: "document"}) | P::to_sexp
 null
 "(document (object (pair key: (string (string_content)) value: (array (number) (number) (true) (null) (string (string_content) (escape_sequence) (string_content)))) (pair key: (string (string_content)) value: (object))))"
 
@@ -250,19 +257,19 @@ import "jq-parser-generator" as P; import "grammars/json" as $g; [P::parse_strea
 null
 ["(object (pair key: (string (string_content)) value: (number)))","(array (number) (number))","(number)","(string (string_content))"]
 
-import "jq-parser-generator" as P; import "grammars/json" as $g; "[1, 2,]" | try P::parse_string($g[0]) catch .message
+import "jq-parser-generator" as P; import "grammars/json" as $g; "[1, 2,]" | try P::parse_string($g[0]; {start: "document"}) catch .message
 null
 "syntax error at line 1, column 7: expected \"[\" or \"\\\"\" or \"false\" or \"null\" or \"true\" or \"{\" or number, found \"]\""
 
 # ----------------------------------------------- bundled grammar: arithmetic
 
-import "jq-parser-generator" as P; import "grammars/arithmetic" as $g; "1 + 2*3 - -(4 % 5)" | P::parse_string($g[0]) | P::to_sexp
+import "jq-parser-generator" as P; import "grammars/arithmetic" as $g; "1 + 2*3 - -(4 % 5)" | P::parse_string($g[0]; {start: "expression"}) | P::to_sexp
 null
 "(expression (sum (number) operator: \"+\" (product (number) operator: \"*\" (number)) operator: \"-\" (negation (product (number) operator: \"%\" (number)))))"
 
 # ------------------------------------------------------ bundled grammar: CSV
 
-import "jq-parser-generator" as P; import "grammars/csv" as $g; [P::parse_stream($g[0]; {}; "a,b,\"c", "\"\"d\"\n1,,3\n", "x") | [.children[] | .text // ([.children[] | if .type == "text" then .text else "\"" end] | join(""))]]
+import "jq-parser-generator" as P; import "grammars/csv" as $g; [P::parse_stream($g[0]; {start: "record"}; "a,b,\"c", "\"\"d\"\n1,,3\n", "x") | [.children[] | .text // ([.children[] | if .type == "text" then .text else "\"" end] | join(""))]]
 null
 [["a","b","c\"d"],["1","","3"],["x"]]
 

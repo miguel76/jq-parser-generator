@@ -46,7 +46,10 @@ Or clone the repository and pass its directory to `jq -L`:
 jq -L /path/to/jq-parser-generator 'import "jq-parser-generator" as P; ...'
 ```
 
-Requires jq 1.7 or newer (developed and tested with 1.7).
+Requires jq 1.7 or newer. The reference version is jq 1.8 (1.8.1 or newer).
+Avoid jq 1.8.0: a regression in its `reduce`/`foreach`, reverted in 1.8.1,
+makes it copy the parser state on every update, so parsing becomes quadratic
+(about 30 s instead of 4 s for a 26 KB JSON document).
 
 ## Usage
 
@@ -258,21 +261,41 @@ by its first character. You can:
 
 ## Performance
 
-These figures come from `python3 tests/run_tests.py --bench`, using jq 1.7
-on one core of a cloud VM:
+These figures come from `python3 tests/run_tests.py --bench` on one core of
+a cloud VM. jq 1.8.1 is the reference version; the jq 1.7 figures were
+measured earlier on the same kind of machine and are kept for comparison:
 
-| workload | throughput | peak memory |
-|---|---|---|
-| JSON document, tree-sitter-json grammar | ~6.4 KiB/s | ~0.5 KiB per input byte (linear) |
-| JSON Lines stream (`start: "_value"`), 42 KB | ~8.8 KiB/s | ~5 MiB, constant |
-| JSON document fed line by line | ~4 KiB/s | linear |
-| flat list of 20k one-char items | ~11 KiB/s | 28 MiB |
+| workload | throughput, jq 1.8.1 | throughput, jq 1.7 | peak memory, jq 1.8.1 | peak memory, jq 1.7 |
+|---|---|---|---|---|
+| JSON document, tree-sitter-json grammar | ~4.1 KiB/s | ~6.4 KiB/s | ~0.5 KiB per input byte (linear) | ~0.5 KiB per input byte (linear) |
+| JSON Lines stream (`start: "_value"`), 42 KB | ~5.5 KiB/s | ~8.8 KiB/s | ~4 MiB, constant | ~5 MiB, constant |
+| JSON document fed line by line | ~2.7 KiB/s | ~4 KiB/s | linear | linear |
+| flat list of 20k one-char items | ~7.2 KiB/s | ~11 KiB/s | 27 MiB | 28 MiB |
+
+jq 1.8.1 is about 1.6× slower than jq 1.7 on these workloads, with the same
+memory use. Avoid jq 1.8.0: its `reduce`/`foreach` regression makes parsing
+whole documents quadratic (about 30 s instead of 6 s for a 26 KB document).
 
 Time is linear in the input size, and the test suite asserts this. The
 constant factor is that of an interpreter running inside jq, so the library
 suits configuration files, DSLs and moderately sized inputs, not
 multi-megabyte documents. Some implementation notes on keeping jq linear are
 in [CLAUDE.md](CLAUDE.md).
+
+### Other jq implementations
+
+gojq 0.12.20 runs the full test suite in CI, including the resource tests,
+and parses a 26 KB JSON document about as fast as jq 1.8.1. fq 0.18.0, which
+is built on gojq, passes the functional tests when run by hand. jaq has not
+been tested. Caveats:
+
+- **Object key order.** gojq keeps object keys sorted, so the default start
+  rule (the first rule in the grammar) becomes the alphabetically first
+  one. Pass the start rule explicitly: `{start: "document"}` in the options,
+  or `"start"` in the grammar.
+- **fq** cannot import JSON data modules (`import "grammars/json" as $g`)
+  and has no `--slurpfile`. Pass grammars with `--argjson` instead. Read raw
+  text with `-d bytes` and `tostring`.
 
 ## Development
 
