@@ -174,6 +174,7 @@ def rules: {
 
 {
   name: "jq",
+  start: "program",
   rules: rules,
   extras: [
     pat("[ \\t\\r\\n]+"),

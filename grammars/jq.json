@@ -1,5 +1,6 @@
 {
   "name": "jq",
+  "start": "program",
   "rules": {
     "program": {
       "type": "SEQ",

@@ -314,6 +314,7 @@ def rules: {
 
 {
   name: "sparql11",
+  start: "QueryUnit",
   rules: rules,
   extras: [pat("\\s"), pat("#[^\\r\\n]*")]
 }
