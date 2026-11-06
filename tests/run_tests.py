@@ -179,10 +179,28 @@ def keeps_key_order():
 
 
 def supports_regex_lookahead():
-    """Oniguruma (jq) has (?!...); Go's regexp (gojq) has no lookaround."""
+    """Oniguruma (jq) has (?!...); Go's regexp (gojq) and Rust's (jaq) have no lookaround."""
     proc = subprocess.run([JQ, "-n", '"ab" | test("a(?!c)")'],
                           capture_output=True, text=True)
     return proc.stdout.strip() == "true"
+
+
+def has_modulemeta():
+    """jq and gojq have modulemeta; jaq does not."""
+    proc = subprocess.run([JQ, "-L", str(ROOT), "-n", '"jq-parser-generator" | modulemeta | .version'],
+                          capture_output=True, text=True, cwd=str(ROOT))
+    return proc.returncode == 0
+
+
+def resolves_dir_modules():
+    """jq and gojq resolve `import "a/b"` to a/b/b.jq as well as a/b.jq; jaq only to a/b.jq."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        (Path(tmp) / "a" / "b").mkdir(parents=True)
+        (Path(tmp) / "a" / "b" / "b.jq").write_text("def f: 1;\n")
+        proc = subprocess.run([JQ, "-n", "-L", tmp, 'import "a/b" as X; X::f'],
+                              capture_output=True, text=True)
+    return proc.stdout.strip() == "1"
 
 
 def read_test_cases(path):
@@ -216,7 +234,7 @@ def read_test_cases(path):
 class JqTestSuites(unittest.TestCase):
     """Runs every tests/*.test file with `jq --run-tests`.
 
-    Implementations without --run-tests (gojq) get an emulation: each case
+    Implementations without --run-tests (gojq, jaq) get an emulation: each case
     runs as its own process and outputs are compared as JSON values. Cases
     marked `# needs: key-order` are skipped where object key order is lost.
     """
@@ -321,16 +339,23 @@ class CliTests(unittest.TestCase):
         self.assertEqual(out.split(), ["7", "2", "70"])
 
     def test_jqpm_layout(self):
-        """The package is importable the way jqpm installs it."""
+        """The package is importable the way jqpm installs it.
+
+        jaq does not look for a/b/b.jq when importing "a/b", so there the
+        module is imported with its full path (see README).
+        """
         import shutil
         import tempfile
         with tempfile.TemporaryDirectory() as tmp:
             pkg = Path(tmp) / "jq_modules" / "miguel76" / "jq-parser-generator"
             pkg.mkdir(parents=True)
             shutil.copy(ROOT / "jq-parser-generator.jq", pkg)
+            path = "miguel76/jq-parser-generator"
+            if not resolves_dir_modules():
+                path += "/jq-parser-generator"
             proc = subprocess.run(
                 [JQ, "-nc", "-L", str(Path(tmp) / "jq_modules"),
-                 'import "miguel76/jq-parser-generator" as P; '
+                 f'import "{path}" as P; '
                  '"x y" | [P::parse_string({rules: {s: ["x", "y"]}})] | length'],
                 capture_output=True)
             self.assertEqual(proc.returncode, 0, proc.stderr.decode())
@@ -367,8 +392,18 @@ class CliTests(unittest.TestCase):
         manifest = json.loads((ROOT / "jqpackage.json").read_text())
         self.assertEqual(manifest["name"], "jq-parser-generator")
         self.assertTrue((ROOT / manifest["main"]).exists())
-        rc, out, _ = self.jq(["-n", '"jq-parser-generator" | modulemeta | .version'])
-        self.assertEqual(json.loads(out), manifest["version"])
+        if has_modulemeta():
+            rc, out, _ = self.jq(["-n", '"jq-parser-generator" | modulemeta | .version'])
+            version = json.loads(out)
+        else:
+            # jaq: read the `module {...};` directive with jq's own parser
+            text = (ROOT / manifest["main"]).read_text()
+            m = re.match(r"\s*module\s*(\{.*?\});", text, re.S)
+            self.assertIsNotNone(m, "no module directive")
+            rc, out, err = self.jq(["-n", m.group(1) + " | .version"])
+            self.assertEqual(rc, 0, err)
+            version = json.loads(out)
+        self.assertEqual(version, manifest["version"])
 
 
 # ---------------------------------------------------------------------------
@@ -406,8 +441,12 @@ class ResourceTests(unittest.TestCase):
         self.assertLess(t4, 15 * SLACK, f"too slow: {t4:.2f}s for {s4} bytes")
         self.assertLess(m4 - self.base_rss, 64 * 1024 * SLACK,
                         f"too much memory: {m4} KiB for {s4} bytes")
-        # memory grows at most linearly with the input
-        self.assertLess((m4 - self.base_rss), max(m1 - self.base_rss, 1024) * size_ratio * 1.5)
+        # memory grows at most linearly with the input: compare the growth
+        # per byte between the larger sizes with that between the smaller
+        # ones, which does not depend on the fixed cost (jaq's is larger)
+        s2, m2 = rows[1][0], rows[1][2]
+        self.assertLess((m4 - m2) / (s4 - s2), max(m2 - m1, 1024) / (s2 - s1) * 1.5,
+                        f"memory grows faster than the input: {rows}")
 
     def test_streaming_constant_memory(self):
         """Emitting many small ASTs from a stream runs in ~constant memory."""

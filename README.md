@@ -284,20 +284,27 @@ in [CLAUDE.md](CLAUDE.md).
 
 ### Other jq implementations
 
-gojq 0.12.20 runs the full test suite in CI, including the resource tests,
-and parses a 26 KB JSON document about as fast as jq 1.8.1. fq 0.18.0, which
-is built on gojq, passes the functional tests when run by hand. jaq has not
-been tested. Caveats:
+gojq 0.12.20 and jaq 3.1.2 run the full test suite in CI, including the
+resource tests. gojq parses a 26 KB JSON document about as fast as jq 1.8.1;
+jaq is about half as fast (~2.6 KiB/s) and uses about twice the memory
+(~1.1 KiB per input byte, still linear; streams stay at ~18 MiB). fq 0.18.0,
+which is built on gojq, passes the functional tests when run by hand.
+Caveats:
 
 - **Object key order.** gojq keeps object keys sorted, so the default start
   rule (the first rule in the grammar) becomes the alphabetically first
   one. Pass the start rule explicitly: `{start: "document"}` in the options,
   or `"start"` in the grammar.
-- **Regex lookahead.** gojq uses Go's `regexp`, which has no lookaround.
-  Grammars whose patterns use `(?!…)` or `(?=…)` fail to compile there. This
-  includes the bundled SPARQL and jq grammars (`grammars/sparql11.json`,
-  `grammars/jq.json`), which are jq-only for now. Use `not_followed_by` /
-  `followed_by` in the grammar instead of regex lookahead.
+- **Regex lookahead.** gojq uses Go's `regexp` and jaq Rust's `regex`;
+  neither has lookaround. Grammars whose patterns use `(?!…)` or `(?=…)`
+  fail to compile there. This includes the bundled SPARQL and jq grammars
+  (`grammars/sparql11.json`, `grammars/jq.json`), which are jq-only for now.
+  Use `not_followed_by` / `followed_by` in the grammar instead of regex
+  lookahead.
+- **jaq module paths.** jaq resolves `import "a/b"` only to `a/b.jq`, not to
+  `a/b/b.jq` as jq does, so with jqpm's layout import the module by its full
+  path: `import "miguel76/jq-parser-generator/jq-parser-generator" as P;`.
+  jaq also has no `modulemeta`.
 - **fq** cannot import JSON data modules (`import "grammars/json" as $g`)
   and has no `--slurpfile`. Pass grammars with `--argjson` instead. Read raw
   text with `-d bytes` and `tostring`.

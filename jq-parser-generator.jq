@@ -170,6 +170,18 @@ def compile_grammar:
 # Parsing engine
 # -----------------------------------------------------------------------------
 
+# Run f and keep its last output, closing the generator, when $on.
+# jaq keeps the iterator of every reduce/foreach/until update open until the
+# loop ends, since the update might still yield more outputs; around _m that
+# holds the memory of the whole parse. last(f) drains it. jq does not need
+# it, hence $on (`$lazy`), set by parse_stream from a probe: in jaq a reduce
+# yields once per output of every update. Not first(f): in jq its
+# `., break` fork stays open inside until and pins the state.
+# In the engine's hot loops the same test is written inline,
+# `if $lazy then last(_m(...)) else _m(...) end`: calling a def with a
+# closure argument costs jq 5-10% of the parse time.
+def _drain($on; f): if $on then last(f) else f end;
+
 def _default_opts:
   {start: null, single: false, lookahead: 0, window: 1024, backoff: 2, memo: true, newline: false, errors: "raise"};
 
@@ -182,6 +194,8 @@ def _attempt($G; $o; $cps; $blocks; $eof; $off; $p0):
   ($cps | length) as $len
   | $o.window as $W
   | $o.memo as $useMemo
+  | $o._lazy as $lazy
+  | $o._mkpath as $mkpath
   | (if $useMemo then 1 | until(pow(32; .) > $len; . + 1) else 0 end) as $md   # memo trie depth
   | ($o.start // $G.start) as $start
 
@@ -207,11 +221,26 @@ def _attempt($G; $o; $cps; $blocks; $eof; $off; $p0):
         ["memo"]
         + [range($md - 1; -1; -1) as $i | (($p / pow(32; $i)) | floor) % 32]
         + [if $tok then $name + "@t" else $name end];
+    # Set a new memo entry. jq and gojq create the missing trie nodes in
+    # setpath, but jaq neither turns null into a container nor grows an
+    # array past its end; there ($mkpath, probed by parse_stream) every
+    # missing level is created first: 32 slots below a digit, an object at
+    # the leaf.
+    def _mnew($mp; $v):
+      if $mkpath then
+        reduce range(1; $mp | length) as $i (.;
+          if getpath($mp[0:$i]) == null
+          then setpath($mp[0:$i]; if ($mp[$i] | type) == "number" then [range(32) | null] else {} end)
+          else . end)
+      else . end
+      | setpath($mp; $v);
 
     # ---- children stack: immutable cons list [node, rest, length] ---------
     # NB: `a // b` is avoided in the engine: when `a` is truthy it leaves a
     # backtracking point alive that pins the state, so the next update of
     # .memo would copy the whole table (quadratic behaviour).
+    # NB: in loop bodies (reduce, until), _m runs as
+    # `if $lazy then last(_m(...)) else _m(...) end`: see _drain.
     def _klen: if .kids == null then 0 else .kids[2] end;
     def _push($x): .kids = [$x, .kids, (if .kids == null then 1 else .kids[2] + 1 end)];
     def _setfirst($p): if .first == null then .first = $p else . end;
@@ -244,7 +273,8 @@ def _attempt($G; $o; $cps; $blocks; $eof; $off; $p0):
               .pos as $p
               | reduce $G.extras[] as $x (.ok = false;
                   if .ok then .
-                  else .pos = $p | .ok = true | _m($x; true)
+                  else .pos = $p | .ok = true
+                       | (if $lazy then last(_m($x; true)) else _m($x; true) end)
                        | if .ok and .pos > $p then . else .pos = $p | .ok = false end
                   end))
           | .ok = true | .kids = $b.kids | .first = $b.first | .sx = [$b.pos, .pos]
@@ -287,7 +317,7 @@ def _attempt($G; $o; $cps; $blocks; $eof; $off; $p0):
                 else .ok = false end
             else
               {pos, kids, first, nk: _klen} as $b
-              | (if $useMemo then setpath($mp; {ok: false}) else . end)   # left-recursion guard
+              | (if $useMemo then _mnew($mp; {ok: false}) else . end)   # left-recursion guard
               | .first = null
               | _m($G.rules[$r.name]; $tok)
               | if .ok then
@@ -302,7 +332,8 @@ def _attempt($G; $o; $cps; $blocks; $eof; $off; $p0):
 
         elif $t == "SEQ" then
           {pos, kids, first} as $b
-          | reduce $r.members[] as $m (.; if .ok then _m($m; $tok) else . end)
+          | reduce $r.members[] as $m (.;
+              if .ok then (if $lazy then last(_m($m; $tok)) else _m($m; $tok) end) else . end)
           | if .ok then . else restore($b) end
 
         elif $t == "CHOICE" then
@@ -311,12 +342,14 @@ def _attempt($G; $o; $cps; $blocks; $eof; $off; $p0):
               # longest match (lexer semantics) inside tokens
               .lb = [null] + .lb
               | reduce $r.members[] as $m (.;
-                  restore($b) | .ok = true | _m($m; true)
+                  restore($b) | .ok = true
+                  | (if $lazy then last(_m($m; true)) else _m($m; true) end)
                   | if .ok and (.lb[0] == null or .pos > .lb[0].pos) then .lb[0] = {pos, kids, first} else . end)
               | if .lb[0] != null then restore(.lb[0]) | .ok = true else restore($b) | .ok = false end
               | .lb = .lb[1:]
             else
-              reduce $r.members[] as $m (.ok = false; if .ok then . else .ok = true | _m($m; $tok) end)
+              reduce $r.members[] as $m (.ok = false;
+                if .ok then . else .ok = true | (if $lazy then last(_m($m; $tok)) else _m($m; $tok) end) end)
             end
 
         elif $t == "REPEAT" or $t == "REPEAT1" then
@@ -324,7 +357,7 @@ def _attempt($G; $o; $cps; $blocks; $eof; $off; $p0):
             .ok = true
             | until(.ok | not;
                 {pos, kids, first} as $b
-                | _m($r.content; $tok)
+                | (if $lazy then last(_m($r.content; $tok)) else _m($r.content; $tok) end)
                 | if .ok and .pos > $b.pos then . else restore($b) | .ok = false end)
             | .ok = true;
           if $t == "REPEAT" then more else _m($r.content; $tok) | if .ok then more else . end end
@@ -425,13 +458,19 @@ def _mkerror($cps; $st; $a):
 # Emits one AST per complete top-level match of the start rule.
 def parse_stream($grammar; $opts; chunks):
   ($grammar | compile_grammar) as $G
-  | (_default_opts + ($opts // {})) as $o
+  | (_default_opts + ($opts // {})
+     # probes for jaq: does a loop keep its update generators open (see
+     # _drain)? does setpath fail to create containers (see _mnew)?
+     | ._lazy = ([reduce (1, 2) as $_ (0; 0, 0)] | length > 1)
+     | ._mkpath = ((try (null | setpath([0]; 1)) catch null) == null)) as $o
+  | $o._lazy as $lazy
   | if $G.rules[$o.start // $G.start] == null then _gerr("unknown start rule '\($o.start)'") else . end
   | (($o.start // $G.start) | startswith("_")) as $hiddenStart
   | label $done
   | foreach ((chunks | if type == "string" then {c: .} else _gerr("input chunks must be strings, got \(type)") end),
              {eof: true}) as $ev
       ({buf: "", off: 0, line: 1, lastnl: -1, out: [], stop: false, prev: null, next: 0};
+       _drain($lazy;
        .out = []
        | .buf += (if $ev.eof then "" elif $o.newline then $ev.c + "\n" else $ev.c end)
        | ($ev.eof == true) as $eof
@@ -444,7 +483,7 @@ def parse_stream($grammar; $opts; chunks):
            | ([range(0; $cps | length; $o.window) as $i | $cps[$i:$i + 2 * $o.window] | implode]) as $blocks
            | .p = 0 | .go = true
            | until(.go | not;
-               _attempt($G; $o; $cps; $blocks; $eof; .off; .p) as $a
+               _drain($lazy; _attempt($G; $o; $cps; $blocks; $eof; .off; .p)) as $a
                | if $a.kind == "match" then
                    .out += [if $hiddenStart then $a.nodes[] else $a.nodes[0] end] | .p = $a.pos
                    | .prev = {far: $a.far, exp: $a.exp}
@@ -463,7 +502,7 @@ def parse_stream($grammar; $opts; chunks):
                | .off += .p
              else . end
            | .next = ((($cps | length) - .p) * $o.backoff | floor)
-         end;
+         end);
        (.out[]
         | if has("error") then
             if $o.errors == "emit" then . else error(.error) end
