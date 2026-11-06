@@ -150,7 +150,7 @@ def compile_grammar:
   elif type != "object" or (.rules | type) != "object" or (.rules | length) == 0 then
     _gerr("a grammar must be an object with a non-empty 'rules' object")
   else
-    (.rules | keys_unsorted) as $names
+    (.rules | to_entries | map(.key)) as $names   # insertion order; keys_unsorted is not in gojq
     | {
         compiled: true,
         name: (.name // "grammar"),

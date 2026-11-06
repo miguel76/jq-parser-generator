@@ -268,6 +268,24 @@ suits configuration files, DSLs and moderately sized inputs, not
 multi-megabyte documents. Some implementation notes on keeping jq linear are
 in [CLAUDE.md](CLAUDE.md).
 
+### Other jq implementations
+
+Measured with gojq 0.12.20 and fq 0.18.0, which is built on gojq. jaq was
+not tested. All functional tests pass on both, with these caveats:
+
+- **Object key order.** gojq keeps object keys sorted, so the default start
+  rule (the first rule in the grammar) becomes the alphabetically first
+  one. Pass the start rule explicitly: `{start: "document"}` in the options,
+  or `"start"` in the grammar.
+- **Memoisation is quadratic.** gojq copies an object on every update, so
+  each memo-table insertion costs time proportional to the table. Use
+  `{memo: false}`: parsing is then linear, and on gojq it is faster than
+  jq 1.8.1 (about 4.4 s vs 6.7 s for a 26 KB JSON document). With the memo
+  table it takes 80 s.
+- **fq** cannot import JSON data modules (`import "grammars/json" as $g`)
+  and has no `--slurpfile`. Pass grammars with `--argjson` instead. Read raw
+  text with `-d bytes` and `tostring`.
+
 ## Development
 
 ```sh
