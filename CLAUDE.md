@@ -28,7 +28,9 @@ make bench      # resource report only
 ```
 
 The reference jq is **1.8** (1.8.1 or newer). Pass another binary with
-`make test JQ=/path/to/jq`. jq 1.7 must keep working. jq 1.8.0 passes the
+`make test JQ=/path/to/jq`. jq 1.7 and gojq must keep working (CI runs
+all three). gojq has no `--run-tests`: `make test-jq` and the runner then
+run each case as its own process and compare outputs as JSON. jq 1.8.0 passes the
 functional tests, but its `reduce`/`foreach` copy the state on every update
 (jqlang/jq#3205, reverted in 1.8.1), so the runner skips resource tests on
 it unless `JQPG_PERF_FORCE=1` is set.
@@ -94,6 +96,12 @@ Engine state (threaded through `_m`):
 - Avoid generators that stay open across updates, e.g.
   `(x, y) as $v | <update .>`.
 - Do not append to arrays that a snapshot also references. Use the cons list.
+- **No large flat objects or arrays that grow during a parse.** gojq never
+  updates in place: every update copies the container. The memo table is
+  therefore a trie over the position (`_mpath`: arrays of 32 slots per
+  base-32 digit, a `{rule: entry}` object per position at the leaves).
+- Do not rely on object key order (`keys_unsorted`, the first rule as
+  start) beyond `compile_grammar`'s default: gojq sorts keys.
 - After touching the engine, run `make bench`. The resource tests assert
   linear scaling and constant memory for streams.
 
@@ -117,6 +125,9 @@ Engine state (threaded through `_m`):
   an input line and the expected output line(s), separated by a blank line.
   Programs must fit on a single line. Use `try … catch` for runtime errors.
   `%%FAIL` is only for compile errors of the test program itself.
+- Give multi-rule grammars an explicit `start`. A case that really tests
+  key order gets a `# needs: key-order` comment line right before it; the
+  emulated runner skips it on gojq.
 - CLI behaviour (`-R`, `-n`, `inputs`, exit codes) goes in `CliTests` in
   `tests/run_tests.py`.
 - New performance-sensitive features need a `ResourceTests` case: record()
@@ -132,4 +143,5 @@ Engine state (threaded through `_m`):
 - Throughput is about 3–7 KiB/s on jq 1.8.1 (5–10 KiB/s on jq 1.7). Possible speed-ups: FIRST-set prefiltering
   of CHOICE alternatives, caching extras skips per position, fewer
   allocations per node.
-- Tested against jq 1.7 and 1.8. CI runs both 1.8.1 and Ubuntu's jq.
+- Tested against jq 1.7, jq 1.8 and gojq. CI runs jq 1.8.1, Ubuntu's jq
+  and gojq 0.12.20. fq passes the functional tests but is not in CI.

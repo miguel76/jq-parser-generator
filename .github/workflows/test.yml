@@ -13,7 +13,8 @@ jobs:
         # 1.8.1 is the reference; 1.7 (Ubuntu's package) stays supported.
         # 1.8.0 is skipped on purpose: its reduce/foreach regression
         # (reverted in 1.8.1) makes parsing quadratic.
-        jq: ["1.8.1", "apt"]
+        # gojq has no --run-tests; tests/run_tests.py emulates it.
+        jq: ["1.8.1", "apt", "gojq-0.12.20"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -23,13 +24,25 @@ jobs:
         if: matrix.jq == 'apt'
         run: sudo apt-get update && sudo apt-get install -y jq && jq --version
       - name: Install jq ${{ matrix.jq }} (release binary)
-        if: matrix.jq != 'apt'
+        if: matrix.jq != 'apt' && !startsWith(matrix.jq, 'gojq-')
         run: |
           sudo curl -fsSL -o /usr/local/bin/jq \
             "https://github.com/jqlang/jq/releases/download/jq-${{ matrix.jq }}/jq-linux-amd64"
           sudo chmod +x /usr/local/bin/jq
           hash -r && jq --version
-      - name: Functional tests (jq --run-tests)
+      - uses: actions/setup-go@v5
+        if: startsWith(matrix.jq, 'gojq-')
+        with:
+          go-version: stable
+      - name: Install ${{ matrix.jq }}
+        if: startsWith(matrix.jq, 'gojq-')
+        run: |
+          go install "github.com/itchyny/gojq/cmd/gojq@v${MATRIX_JQ#gojq-}"
+          echo "JQ=$(go env GOPATH)/bin/gojq" >> "$GITHUB_ENV"
+          "$(go env GOPATH)/bin/gojq" --version
+        env:
+          MATRIX_JQ: ${{ matrix.jq }}
+      - name: Functional tests (jq --run-tests, emulated on gojq)
         run: make test-jq
       - name: All tests incl. resource monitoring
         env:

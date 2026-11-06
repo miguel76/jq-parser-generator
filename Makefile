@@ -5,8 +5,10 @@ JQ ?= jq
 test:
 	JQ=$(JQ) python3 tests/run_tests.py
 
+# jq has --run-tests; for other implementations (gojq) the runner emulates it
 test-jq:
-	$(JQ) -L . --run-tests tests/parse.test
+	@if $(JQ) --version | grep -q '^jq-'; then $(JQ) -L . --run-tests tests/parse.test; \
+	else JQ=$(JQ) python3 tests/run_tests.py JqTestSuites; fi
 
 bench:
 	JQ=$(JQ) python3 tests/run_tests.py --bench

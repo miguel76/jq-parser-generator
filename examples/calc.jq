@@ -24,4 +24,4 @@ def ev:
 
 # The grammar treats newlines as whitespace, so `P::parse` over the whole
 # input would read "1\n-2" as one expression. Parse each line on its own.
-inputs | select(test("\\S")) | P::parse_string($g[0]; {single: true}) | ev
+inputs | select(test("\\S")) | P::parse_string($g[0]; {start: "expression", single: true}) | ev
