@@ -156,3 +156,5 @@ emits nothing, even if the start rule can match the empty string.
   allocations per node.
 - Tested against jq 1.7, jq 1.8 and gojq. CI runs jq 1.8.1, Ubuntu's jq
   and gojq 0.12.20. fq passes the functional tests but is not in CI.
+  The SPARQL and jq grammars use regex lookahead, which gojq lacks, so they
+  are jq-only and their CLI test is skipped on gojq.

@@ -293,6 +293,11 @@ been tested. Caveats:
   rule (the first rule in the grammar) becomes the alphabetically first
   one. Pass the start rule explicitly: `{start: "document"}` in the options,
   or `"start"` in the grammar.
+- **Regex lookahead.** gojq uses Go's `regexp`, which has no lookaround.
+  Grammars whose patterns use `(?!…)` or `(?=…)` fail to compile there. This
+  includes the bundled SPARQL and jq grammars (`grammars/sparql11.json`,
+  `grammars/jq.json`), which are jq-only for now. Use `not_followed_by` /
+  `followed_by` in the grammar instead of regex lookahead.
 - **fq** cannot import JSON data modules (`import "grammars/json" as $g`)
   and has no `--slurpfile`. Pass grammars with `--argjson` instead. Read raw
   text with `-d bytes` and `tostring`.

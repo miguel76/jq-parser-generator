@@ -178,6 +178,13 @@ def keeps_key_order():
     return proc.stdout.strip() == '["b","a"]'
 
 
+def supports_regex_lookahead():
+    """Oniguruma (jq) has (?!...); Go's regexp (gojq) has no lookaround."""
+    proc = subprocess.run([JQ, "-n", '"ab" | test("a(?!c)")'],
+                          capture_output=True, text=True)
+    return proc.stdout.strip() == "true"
+
+
 def read_test_cases(path):
     """Parse a jq --run-tests file into (line, program, input, expected, needs)."""
     lines = path.read_text().split("\n")
@@ -337,6 +344,8 @@ class CliTests(unittest.TestCase):
             committed = json.loads((ROOT / "grammars" / (src.stem + ".json")).read_text())
             self.assertEqual(json.loads(out), committed, f"run `make grammars` ({src.name})")
 
+    @unittest.skipUnless(supports_regex_lookahead(),
+                         "grammars/sparql11.json and grammars/jq.json use regex lookahead (?!...)")
     def test_sparql_and_jq_grammars(self):
         rc, out, err = self.jq(["-nrc", "--slurpfile", "s", "grammars/sparql11.json",
                                 "--slurpfile", "j", "grammars/jq.json",

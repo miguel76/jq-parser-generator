@@ -17,6 +17,12 @@ missing features, most important first.
 | SPARQL 1.1 | [`grammars/sparql11.json`](../grammars/sparql11.json) (source: [`grammars/src/sparql11.jq`](../grammars/src/sparql11.jq)) | **258 / 258** | 83 / 112, all 29 misses are static semantics | ~0.5–1 KB/s |
 | jq 1.8 | [`grammars/jq.json`](../grammars/jq.json) (source: [`grammars/src/jq.jq`](../grammars/src/jq.jq)) | **820 / 820**, incl. jq's own `src/builtin.jq` | 8 / 19, all 11 misses are compile-time checks | ~1 KB/s |
 
+Both grammars need **jq** (1.7 or 1.8): their regexes use negative lookahead
+`(?!…)`, mostly for keyword boundaries, and gojq's regex engine (Go's
+`regexp`) has none. Making them load on gojq means replacing each regex
+lookahead with a grammar-level `NOT` (`not_followed_by`), at some cost in
+speed, and re-running the conformance corpora.
+
 ## Usage
 
 ```sh
