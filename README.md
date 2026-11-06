@@ -247,15 +247,20 @@ by its first character. You can:
 
 ## Performance
 
-These figures come from `python3 tests/run_tests.py --bench`, using jq 1.7
-on one core of a cloud VM:
+These figures come from `python3 tests/run_tests.py --bench` on one core of
+a cloud VM. jq 1.8.1 is the reference version; the jq 1.7 figures were
+measured earlier on the same kind of machine and are kept for comparison:
 
-| workload | throughput | peak memory |
-|---|---|---|
-| JSON document, tree-sitter-json grammar | ~6.4 KiB/s | ~0.5 KiB per input byte (linear) |
-| JSON Lines stream (`start: "_value"`), 42 KB | ~8.8 KiB/s | ~5 MiB, constant |
-| JSON document fed line by line | ~4 KiB/s | linear |
-| flat list of 20k one-char items | ~11 KiB/s | 28 MiB |
+| workload | throughput, jq 1.8.1 | throughput, jq 1.7 | peak memory, jq 1.8.1 | peak memory, jq 1.7 |
+|---|---|---|---|---|
+| JSON document, tree-sitter-json grammar | ~4.1 KiB/s | ~6.4 KiB/s | ~0.5 KiB per input byte (linear) | ~0.5 KiB per input byte (linear) |
+| JSON Lines stream (`start: "_value"`), 42 KB | ~5.5 KiB/s | ~8.8 KiB/s | ~4 MiB, constant | ~5 MiB, constant |
+| JSON document fed line by line | ~2.7 KiB/s | ~4 KiB/s | linear | linear |
+| flat list of 20k one-char items | ~7.2 KiB/s | ~11 KiB/s | 27 MiB | 28 MiB |
+
+jq 1.8.1 is about 1.6× slower than jq 1.7 on these workloads, with the same
+memory use. Avoid jq 1.8.0: its `reduce`/`foreach` regression makes parsing
+whole documents quadratic (about 30 s instead of 6 s for a 26 KB document).
 
 Time is linear in the input size, and the test suite asserts this. The
 constant factor is that of an interpreter running inside jq, so the library

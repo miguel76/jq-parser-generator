@@ -129,7 +129,7 @@ Engine state (threaded through `_m`):
   PREC_RIGHT, so that tree-sitter expression grammars load unchanged.
 - Extras produce no nodes (comments are dropped).
 - `word`, `conflicts`, `externals` and `precedences` are ignored.
-- Throughput is about 5–10 KiB/s. Possible speed-ups: FIRST-set prefiltering
+- Throughput is about 3–7 KiB/s on jq 1.8.1 (5–10 KiB/s on jq 1.7). Possible speed-ups: FIRST-set prefiltering
   of CHOICE alternatives, caching extras skips per position, fewer
   allocations per node.
 - Tested against jq 1.7 and 1.8. CI runs both 1.8.1 and Ubuntu's jq.
